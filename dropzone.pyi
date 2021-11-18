@@ -1,4 +1,13 @@
 # -*- coding: utf-8 -*-
+"""
+The function calls and associated type information for Dropzone's API.
+Although the `official documentation on GitHub
+<https://github.com/aptonic/dropzone4-actions>`_.
+uses the variable name ``dz``, it's a module imported like
+``import dropzone as dz`` and then added to ``__builtins__``.
+
+"""
+
 from typing import AnyStr, NoReturn, Optional, Iterable, overload, Literal
 
 
@@ -95,7 +104,7 @@ def inputbox(title: AnyStr, prompt_text: AnyStr,
     """
     ...
 
-def percent(value: int) -> NoReturn:
+def percent(value: float) -> NoReturn:
     """
     *Dropzone* updates the task progress bar to reflect this value. You only
     need to call this method when in determinate mode.

@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """
+A b2sdk AccountInfo object for persisting all the information needed to call
+b2sdk API functions using Dropzone's ``save_value`` function.
 """
 import json
 import os
@@ -105,10 +107,22 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
 
     @property
     def bucket_name(self):
+        # if this application key is limited to only one bucket,
+        # then that's the bucket name we should be returning
+        if self.restricted_bucket:
+            return self.restricted_bucket
         return self._load_value(self.BUCKET_NAME_KEY)
 
     @bucket_name.setter
     def bucket_name(self, value):
+        if self.restricted_bucket:
+            if not value:
+                value = self.restricted_bucket
+            elif self.restricted_bucket != value:
+                raise ValueError("This application key is restricted to '%s' "
+                                 "and cannot be set to '%s'" %
+                                 (self.restricted_bucket, value))
+
         self._save_value(self.BUCKET_NAME_KEY, value)
 
     @property
@@ -143,7 +157,7 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
 
     @property
     def recommended_part_size(self):
-        return self._load_value(self.RECOMMENDED_PART_SIZE_KEY)
+        return int(self._load_value(self.RECOMMENDED_PART_SIZE_KEY))
 
     @recommended_part_size.setter
     def recommended_part_size(self, value):
@@ -151,7 +165,7 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
 
     @property
     def absolute_minimum_part_size(self):
-        return self._load_value(self.MIN_PART_SIZE_KEY)
+        return int(self._load_value(self.MIN_PART_SIZE_KEY))
 
     @absolute_minimum_part_size.setter
     def absolute_minimum_part_size(self, value):
@@ -173,6 +187,8 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
     def prefix(self, value):
         if not value:
             value = "/"
+        elif not value.startswith("/"):
+            value = "/" + value
         self._save_value(self.PREFIX_KEY, value)
 
     @property
@@ -182,6 +198,23 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
     @realm.setter
     def realm(self, value):
         self._save_value(self.REALM_KEY, value)
+
+    @property
+    def restricted_bucket(self):
+        """
+        This is the name of the bucket that this application key is restricted
+        to. If this application key has permission to access any bucket in the
+        account, returns None.
+
+        :return: the name of the bucket this application key is restricted to
+                 or None if it can access any bucket
+        :rtype: str|None
+        """
+        try:
+            return self.allowed["bucketName"]
+        except (KeyError, TypeError):
+            # self.allowed was probably None
+            return None
 
     @property
     def s3_api_url(self):

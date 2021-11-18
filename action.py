@@ -16,20 +16,3 @@
 # UniqueID: dfd244a9-ebab-4e7f-a6ba-b92f5f30dbc5
 
 from b2dz import clicked, dragged
-
-import sys
-
-
-def _main():
-    action = sys.argv[1]
-    items = sys.argv[2:]
-    print(action, items)
-    try:
-        func = globals()[action]
-    except KeyError:
-        raise RuntimeError("Unknown action '%s'" % action)
-    func()
-
-
-if __name__ == "__main__":
-    _main()
