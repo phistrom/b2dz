@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
+import logging
 import multiprocessing as mp
 import os
 import sys
 import time
-
-try:
-    from urlparse import urlparse
-except ImportError:
-    from urllib.parse import urlparse
+import traceback
 
 import dropzone as dz
 from b2sdk.sync.sync import Synchronizer
@@ -16,6 +13,10 @@ from b2sdk.v2 import parse_sync_folder
 from .b2dz_account_info import DropzoneB2AccountInfo
 from .dzfolder import DropzoneFolder
 from .dzprogress import DropzoneSyncReport
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 class B2Dropzone(object):
@@ -35,6 +36,9 @@ class B2Dropzone(object):
     prefix.type = textfield
     prefix.label = Path Prefix
     prefix.default = %(prefix)s
+    custom_download_url.type = textfield
+    custom_download_url.label = Custom URL (i.e. Cloudflare domain)
+    custom_download_url.default = %(custom_download_url)s
     
     saved.type = defaultbutton
     saved.label = Save
@@ -45,25 +49,31 @@ class B2Dropzone(object):
     """Definition of the configuration menu using Pashua"""
 
     def __init__(self):
-        print(os.environ)
-        print(self.key_modifier)
+        logger.debug("Current environ:\n\t%s", os.environ)
+        logger.debug("Key modifier: %s", self.key_modifier)
         self.config = DropzoneB2AccountInfo()
-        self._custom_download_url = None
-        print(self.config)
+        try:
+            self.config.load_config()
+            print(self.config)
+        except Exception as ex:
+            logger.error(traceback.format_exc())
+            dz.alert("Configuration Corrupt", "%s" % " ".join(ex.args))
+            self.config = DropzoneB2AccountInfo()  # fresh new config
+            self.config.save_config()
         if not self.config.is_valid or self.clicked:
-            config = self.show_config()
-            if config is False:
+            accepted = self.show_config()
+            if accepted is False:
                 dz.fail("Configuration was cancelled.")
                 return  # the config screen was cancelled
 
         self.api = B2Api(self.config)
         if not self.config.allowed or not self.config.auth_token:
-            print("Need to reauthorize!")
+            logger.info("Need to reauthorize!")
             self.api.authorize_account("production",
                                        self.config.application_key_id,
                                        self.config.application_key)
         else:
-            print("Not reauthorizing.")
+            logger.debug("No need to reauthorize.")
 
         if self.config.bucket_name is None:
             bucket = self.show_bucket_select()
@@ -107,32 +117,6 @@ class B2Dropzone(object):
         :rtype: bool
         """
         return self.action_invoked == "clicked"
-
-    @property
-    def custom_download_url(self):
-        """
-        Custom download URL prefix if the user specified one. Otherwise
-        returns the B2 "friendly URL" for files in the configured bucket.
-
-        :return: the start of the URL for downloading a file from B2
-        :rtype: str
-        """
-        if not self._custom_download_url:
-            url = self.config.download_url.rstrip("/")
-            url = url + "/file/%s/" % self.config.bucket_name
-            return url
-        return self._custom_download_url
-
-    @custom_download_url.setter
-    def custom_download_url(self, value):
-        if not value:
-            self._custom_download_url = None
-            return
-        parsed = urlparse(value)
-        if not parsed.scheme and not parsed.netloc:
-            raise ValueError("Invalid custom URL.")
-        value = value.rstrip("/") + "/"
-        self._custom_download_url = value
 
     @property
     def dragged(self):
@@ -182,7 +166,7 @@ class B2Dropzone(object):
         prefix = self.config.prefix.strip("/")
         filename = prefix + "/" + filename
         filename = filename.lstrip("/")
-        url = self.custom_download_url.rstrip("/") + "/" + filename
+        url = self.config.effective_download_url + filename
         return url
 
     def show_bucket_select(self):
@@ -205,7 +189,7 @@ class B2Dropzone(object):
         %s
         """ % "\n ".join(popup_options)
         result = dz.pashua(dialog_config)
-        print(result)
+        logger.debug(result)
         if result["cancelled"] == "1":
             return None
         bucket_name = result["b"]
@@ -216,37 +200,33 @@ class B2Dropzone(object):
         Prompts the user to modify the configuration.
         """
         config = self.config
-        print(config)
-        config_dict = {
-            "application_key_id": config.application_key_id,
-            "application_key": config.application_key,
-            "bucket_name": config.bucket_name,
-            "prefix": config.prefix,
-        }
-        # replace None values with empty strings
-        config_dict = {k: "" if v is None else v for k, v in config_dict.items()}
-        dialog_box = self._config_dialog % config_dict
         while True:
+            config_dict = {
+                "application_key_id": config.application_key_id,
+                "application_key": config.application_key,
+                "bucket_name": config.bucket_name,
+                "prefix": config.prefix,
+                "custom_download_url": config.custom_download_url,
+            }
+            # replace None values with empty strings
+            config_dict = {k: "" if v is None else v for k, v in config_dict.items()}
+            dialog_box = self._config_dialog % config_dict
+            # while True:
             results = dz.pashua(dialog_box)
-            print(results)
+            logger.debug(results)
             if results.get("clear_cache") == "1":
                 config.clear_cache()
                 continue
-            else:
-                break
+            elif results["cancelled"] == "1" or results["saved"] != "1":
+                logger.debug("Cancelled!")
+                return False
 
-        if results["cancelled"] == "1" or results["saved"] != "1":
-            print("Cancelled!")
-            return False
-
-        # if user changes the application_key_id, we should clear all the
-        # other ephemeral settings
-        if results["application_key_id"] != config.application_key_id:
-            config.clear_cache()
-
-        config = DropzoneB2AccountInfo(**results)
-        self.config = config
-        return config
+            config = DropzoneB2AccountInfo(**results)
+            if config.is_valid:
+                config.save_config()
+                self.config = config
+                return True
+            # if config isn't valid, we show the dialog box again
 
     def upload_files(self):
         """
@@ -270,9 +250,9 @@ class B2Dropzone(object):
         files = [i for i in self.items if not os.path.isdir(i)]
         if files:
             folders.append((DropzoneFolder(files), self.b2_dest_path))
-        print(folders)
+        logger.debug(folders)
         for folder, dest_path in folders:
-            print(folder, dest_path)
+            logger.debug(folder, dest_path)
             dest_folder = parse_sync_folder(dest_path, self.api)
             with DropzoneSyncReport(sys.stdout, False) as reporter:
                 millis = int(round(time.time() * 1000))

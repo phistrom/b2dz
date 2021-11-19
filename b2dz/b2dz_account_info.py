@@ -3,14 +3,26 @@
 A b2sdk AccountInfo object for persisting all the information needed to call
 b2sdk API functions using Dropzone's ``save_value`` function.
 """
+import base64
+import collections
 import json
+import logging
 import os
+import zlib
 from functools import wraps
-from json import JSONDecodeError
+
+try:
+    from urlparse import urlparse, urljoin
+except ImportError:
+    from urllib.parse import urlparse
+    from urllib.parse import urljoin
 
 import dropzone as dz
 from b2sdk.account_info.exception import MissingAccountData
 from b2sdk.v2 import UrlPoolAccountInfo
+
+
+logger = logging.getLogger(__name__)
 
 
 def _missing_error(function):
@@ -41,69 +53,175 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
     API_URL_KEY = "B2DZ_API_URL"
     AUTH_TOKEN_KEY = "B2DZ_AUTH_TOKEN"
     BUCKETS_KEY = "B2DZ_BUCKETS"
+    BUCKET_NAME_KEY = "B2DZ_BUCKET_NAME"
+    CUSTOM_DOWNLOAD_URL_KEY = "B2DZ_CUSTOM_DOWNLOAD_URL"
     DOWNLOAD_URL_KEY = "B2DZ_DOWNLOAD_URL"
     MIN_PART_SIZE_KEY = "B2DZ_MIN_PART_SIZE"
+    PREFIX_KEY = "B2DZ_PREFIX_PATH"
     REALM_KEY = "B2DZ_REALM_KEY"
     RECOMMENDED_PART_SIZE_KEY = "B2DZ_RECOMMENDED_PART_SIZE"
     S3_API_URL_KEY = "B2DZ_S3_API_URL"
     SECRET_KEY_KEY = "B2DZ_APPLICATION_KEY"
-    BUCKET_NAME_KEY = "B2DZ_BUCKET_NAME"
-    PREFIX_KEY = "B2DZ_PREFIX_PATH"
 
     def __init__(self, application_key_id=None, application_key=None,
-                 bucket_name=None, prefix=None, **kwargs):
+                 bucket_name=None, prefix=None, custom_download_url=None,
+                 **kwargs):
         super(DropzoneB2AccountInfo, self).__init__()
-        if application_key_id is not None:
-            self.application_key_id = application_key_id
-        if application_key is not None:
-            self.application_key = application_key
-        if bucket_name is not None:
-            self.bucket_name = bucket_name
-        if prefix is not None:
-            self.prefix = prefix
+
+        self._absolute_minimum_part_size = None
+        self._account_id = None
+        self._allowed = None
+        self._api_url = None
+        self._auth_token = None
+        self._auth_token = None
+        self._bucket_name = None
+        self._buckets = None
+        self._download_url = None
+        self._realm = None
+        self._recommended_part_size = None
+        self._s3_api_url = None
+
+        self.application_key_id = application_key_id
+        self.application_key = application_key
+        self.bucket_name = bucket_name
+        self.prefix = prefix
+        self.custom_download_url = custom_download_url
+
+    def load_config(self):
+        self.absolute_minimum_part_size = self._load_value(self.MIN_PART_SIZE_KEY)
+        self.account_id = self._load_value(self.ACCOUNT_ID_KEY)
+        self.allowed = self._load_json_value(self.ALLOWED_KEY)
+        self.api_url = self._load_value(self.API_URL_KEY)
+        self.application_key = self._load_value(self.SECRET_KEY_KEY)
+        self.application_key_id = self._load_value(self.ACCESS_KEY_KEY)
+        self.auth_token = self._load_value(self.AUTH_TOKEN_KEY)
+        self.bucket_name = self._load_value(self.BUCKET_NAME_KEY)
+        self.buckets = self._load_json_value(self.BUCKETS_KEY)
+        self.custom_download_url = self._load_value(self.CUSTOM_DOWNLOAD_URL_KEY)
+        self.download_url = self._load_value(self.DOWNLOAD_URL_KEY)
+        self.prefix = self._load_value(self.PREFIX_KEY)
+        self.realm = self._load_value(self.REALM_KEY)
+        self.recommended_part_size = self._load_value(self.RECOMMENDED_PART_SIZE_KEY)
+        self.s3_api_url = self._load_value(self.S3_API_URL_KEY)
+
+    def save_config(self):
+        self._save_value(self.MIN_PART_SIZE_KEY, self.absolute_minimum_part_size)
+        self._save_value(self.ACCOUNT_ID_KEY, self.account_id)
+        self._save_json_value(self.ALLOWED_KEY, self.allowed)
+        self._save_value(self.API_URL_KEY, self.api_url)
+        self._save_value(self.SECRET_KEY_KEY, self.application_key)
+        self._save_value(self.ACCESS_KEY_KEY, self.application_key_id)
+        self._save_value(self.AUTH_TOKEN_KEY, self.auth_token)
+        self._save_value(self.BUCKET_NAME_KEY, self.bucket_name)
+        self._save_json_value(self.BUCKETS_KEY, self.buckets)
+        self._save_value(self.CUSTOM_DOWNLOAD_URL_KEY, self.custom_download_url)
+        self._save_value(self.DOWNLOAD_URL_KEY, self.download_url)
+        self._save_value(self.PREFIX_KEY, self.prefix)
+        self._save_value(self.REALM_KEY, self.realm)
+        self._save_value(self.RECOMMENDED_PART_SIZE_KEY, self.recommended_part_size)
+        self._save_value(self.S3_API_URL_KEY, self.s3_api_url)
 
     @staticmethod
     def _load_value(key):
         value = os.environ.get(key)
-        try:
-            value = value.replace("\\:", ":").replace('\\"', '"')
-        except AttributeError:
-            pass
+        logger.debug("_load_value: Key '%s' was:\n%s", key, value)
+        print("_load_value: Key '%s' was:\n%s" % (key, value))
+        # try:
+        #     value = value.replace("\\:", ":").replace('\\"', '"')
+        # except AttributeError:
+        #     pass
         return value
+
+    @classmethod
+    def _load_json_value(cls, key):
+        value = cls._load_value(key)
+        if not value:
+            return None
+        value = base64.b64decode(value)
+        value = zlib.decompress(value).decode("utf-8")
+        return json.loads(value)
 
     @staticmethod
     def _save_value(key, value):
-        if value is None or value == "":
+        if value is None or value == "":  # We still want to allow False or 0
             dz.remove_value(key)
         else:
             value = str(value)
-            value = value.replace(":", "\\:").replace('"', '\\"')
+            # value = value.replace(":", "\\:").replace('"', '\\"')
             dz.save_value(key, value)
             os.environ[key] = value
 
+    @classmethod
+    def _save_json_value(cls, key, value):
+        if value is not None:
+            value = json.dumps(value, separators=(",", ":"))
+            value = zlib.compress(value.encode("utf-8"))
+            value = base64.b64encode(value).decode("utf-8")
+        cls._save_value(key, value)
+
+    @property
+    def absolute_minimum_part_size(self):
+        return self._absolute_minimum_part_size
+
+    @absolute_minimum_part_size.setter
+    def absolute_minimum_part_size(self, value):
+        if value is not None:
+            value = int(value)
+        self._absolute_minimum_part_size = value
+
     @property
     def account_id(self):
-        return self._load_value(self.ACCOUNT_ID_KEY)
+        return self._account_id
 
     @account_id.setter
     def account_id(self, value):
-        self._save_value(self.ACCOUNT_ID_KEY, value)
+        self._account_id = value
+
+    @property
+    def application_key(self):
+        return self._application_key
+
+    @application_key.setter
+    def application_key(self, value):
+        self._application_key = value
+
+    @property
+    def allowed(self):
+        """
+        :rtype: dict
+        """
+        return self._allowed
+
+    @allowed.setter
+    def allowed(self, value):
+        """
+        :type value: dict
+        """
+        self._allowed = value
+
+    @property
+    def application_key_id(self):
+        return self._application_key_id
+
+    @application_key_id.setter
+    def application_key_id(self, value):
+        self._application_key_id = value
 
     @property
     def auth_token(self):
-        return self._load_value(self.AUTH_TOKEN_KEY)
+        return self._auth_token
 
     @auth_token.setter
     def auth_token(self, value):
-        self._save_value(self.AUTH_TOKEN_KEY, value)
+        self._auth_token = value
 
     @property
     def api_url(self):
-        return self._load_value(self.API_URL_KEY)
+        return self._api_url
 
     @api_url.setter
     def api_url(self, value):
-        self._save_value(self.API_URL_KEY, value)
+        self._api_url = value
 
     @property
     def bucket_name(self):
@@ -111,7 +229,7 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
         # then that's the bucket name we should be returning
         if self.restricted_bucket:
             return self.restricted_bucket
-        return self._load_value(self.BUCKET_NAME_KEY)
+        return self._bucket_name
 
     @bucket_name.setter
     def bucket_name(self, value):
@@ -123,7 +241,7 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
                                  "and cannot be set to '%s'" %
                                  (self.restricted_bucket, value))
 
-        self._save_value(self.BUCKET_NAME_KEY, value)
+        self._bucket_name = value
 
     @property
     def buckets(self):
@@ -133,71 +251,101 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
 
         :rtype: dict[str, str]
         """
-        buckets = self._load_value(self.BUCKETS_KEY)
-        if buckets is None:
-            return {}
-        return json.loads(buckets)
+        return {} if self._buckets is None else self._buckets
 
     @buckets.setter
     def buckets(self, value):
         """
-        :type value: dict[str, str]
+        :type value: dict[str, str]|None
         """
-        if value is not None:
-            value = json.dumps(value)
-        self._save_value(self.BUCKETS_KEY, value)
+        if value is None:
+            value = {}
+        if not isinstance(value, collections.Mapping):
+            raise ValueError("`buckets` should be a dictionary. Not a '%s'."
+                             % type(value).__name__)
+        self._buckets = value
+
+    @property
+    def custom_download_url(self):
+        """
+        Custom download URL prefix if the user specified one. Otherwise
+        returns the B2 "friendly URL" for files in the configured bucket.
+
+        :return: the start of the URL for downloading a file from B2
+        :rtype: str
+        """
+        return self._custom_download_url
+
+    @custom_download_url.setter
+    def custom_download_url(self, value):
+        if not value:
+            self._custom_download_url = None
+            return
+        parsed = urlparse(value)
+        if not parsed.scheme and not parsed.netloc:
+            raise ValueError("Invalid custom URL.")
+        value = value.rstrip("/") + "/"
+        self._custom_download_url = value
 
     @property
     def download_url(self):
-        return self._load_value(self.DOWNLOAD_URL_KEY)
+        """
+        A download URL that is set by the ``authorize_account`` API call.
+        Usually looks similar to ``https://f001.backblazeb2.com``.
+
+        :rtype: str
+        """
+        return self._download_url
 
     @download_url.setter
     def download_url(self, value):
-        self._save_value(self.DOWNLOAD_URL_KEY, value)
+        self._download_url = value
 
     @property
-    def recommended_part_size(self):
-        return int(self._load_value(self.RECOMMENDED_PART_SIZE_KEY))
-
-    @recommended_part_size.setter
-    def recommended_part_size(self, value):
-        self._save_value(self.RECOMMENDED_PART_SIZE_KEY, value)
-
-    @property
-    def absolute_minimum_part_size(self):
-        return int(self._load_value(self.MIN_PART_SIZE_KEY))
-
-    @absolute_minimum_part_size.setter
-    def absolute_minimum_part_size(self, value):
-        self._save_value(self.MIN_PART_SIZE_KEY, value)
-
-    @property
-    def application_key(self):
-        return self._load_value(self.SECRET_KEY_KEY)
-
-    @application_key.setter
-    def application_key(self, value):
-        self._save_value(self.SECRET_KEY_KEY, value)
+    def effective_download_url(self):
+        """
+        The custom URL provided by the user. If the user did not provide a
+        custom URL, then we use the one provided by Backblaze B2.
+        :rtype: str|None
+        """
+        if self.custom_download_url:
+            return self.custom_download_url
+        if not self.download_url:
+            return None
+        urlparts = (self.download_url, "file", self.bucket_name)
+        urlparts = [p.strip("/") for p in urlparts]
+        # returns <download_url>/file/<bucket-name>/
+        return "/".join(urlparts) + "/"
 
     @property
     def prefix(self):
-        return self._load_value(self.PREFIX_KEY)
+        return self._prefix
 
     @prefix.setter
     def prefix(self, value):
         if not value:
             value = "/"
-        elif not value.startswith("/"):
-            value = "/" + value
-        self._save_value(self.PREFIX_KEY, value)
+        else:
+            value = "/" + value.strip("/") + "/"
+        self._prefix = value
 
     @property
     def realm(self):
-        return self._load_value(self.REALM_KEY)
+        return self._realm
 
     @realm.setter
     def realm(self, value):
-        self._save_value(self.REALM_KEY, value)
+        self._realm = value
+
+    @property
+    def recommended_part_size(self):
+        return self._recommended_part_size
+
+    @recommended_part_size.setter
+    def recommended_part_size(self, value):
+        if value is not None:
+            value = int(value)
+        self._recommended_part_size = value
 
     @property
     def restricted_bucket(self):
@@ -218,39 +366,11 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
 
     @property
     def s3_api_url(self):
-        return self._load_value(self.S3_API_URL_KEY)
+        return self._s3_api_url
 
     @s3_api_url.setter
     def s3_api_url(self, value):
-        self._save_value(self.S3_API_URL_KEY, value)
-
-    @property
-    def allowed(self):
-        """
-        :rtype: dict
-        """
-        value = self._load_value(self.ALLOWED_KEY)
-        if value is None:
-            return None
-        try:
-            return json.loads(value)
-        except JSONDecodeError as ex:
-            print(value)
-            raise ex
-
-    @allowed.setter
-    def allowed(self, value):
-        if value is not None:
-            value = json.dumps(value, separators=(",", ":"))
-        self._save_value(self.ALLOWED_KEY, value)
-
-    @property
-    def application_key_id(self):
-        return self._load_value(self.ACCESS_KEY_KEY)
-
-    @application_key_id.setter
-    def application_key_id(self, value):
-        self._save_value(self.ACCESS_KEY_KEY, value)
+        self._s3_api_url = value
 
     def clear(self):
         self.clear_cache()
@@ -258,6 +378,10 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
         return super(DropzoneB2AccountInfo, self).clear()
 
     def clear_cache(self):
+        """
+        Clear just the fields that are set by b2sdk and not usually by the
+        user directly.
+        """
         self.account_id = None
         self.allowed = None
         self.api_url = None
@@ -275,23 +399,25 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
 
     @property
     def is_valid(self):
-        return bool(self.application_key_id and self.application_key and
-                    self.prefix)
+        return bool(self.application_key_id and self.application_key)
 
     def refresh_entire_bucket_name_cache(self, name_id_iterable):
         self.buckets = dict(name_id_iterable)
+        self.save_config()
 
     def remove_bucket_name(self, bucket_name):
-        self.buckets = {name: _id for name, _id in self.buckets.items()
-                        if name != bucket_name}
+        try:
+            del self.buckets[bucket_name]
+            self.save_config()
+        except KeyError:
+            pass
 
     def save_bucket(self, bucket):
         """
         :type bucket: b2sdk.bucket.Bucket
         """
-        buckets = self.buckets
-        buckets[bucket.name] = bucket.id_
-        self.buckets = buckets
+        self.buckets[bucket.name] = bucket.id_
+        self.save_config()
 
     def get_bucket_id_or_none_from_bucket_name(self, bucket_name):
         return self.buckets.get(bucket_name)
@@ -361,3 +487,5 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
         self.s3_api_url = s3_api_url
         self.allowed = allowed
         self.application_key_id = application_key_id
+
+        self.save_config()

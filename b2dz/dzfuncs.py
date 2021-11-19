@@ -3,6 +3,7 @@
 Entry functions for Dropzone's two supported function calls:
 clicked and dragged.
 """
+import traceback
 
 import dropzone as dz
 from .b2api import B2Dropzone
@@ -15,6 +16,7 @@ def clicked():
     try:
         B2Dropzone()
     except Exception as ex:
+        print(traceback.format_exc())
         dz.fail(" ".join(ex.args))
     else:
         dz.url(False)
