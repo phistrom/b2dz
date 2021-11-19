@@ -17,6 +17,7 @@ from .dzprogress import DropzoneSyncReport
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 
 class B2Dropzone(object):
@@ -92,7 +93,7 @@ class B2Dropzone(object):
         """
         settings = {
             "bucket_name": self.config.bucket_name,
-            "prefix": self.config.prefix,
+            "prefix": self.config.effective_prefix,
         }
         b2_path = "b2://%(bucket_name)s%(prefix)s" % settings
         return b2_path
@@ -163,7 +164,7 @@ class B2Dropzone(object):
         :rtype: str
         """
         filename = os.path.basename(filepath).strip("/")
-        prefix = self.config.prefix.strip("/")
+        prefix = self.config.effective_prefix.strip("/")
         filename = prefix + "/" + filename
         filename = filename.lstrip("/")
         url = self.config.effective_download_url + filename
@@ -221,7 +222,12 @@ class B2Dropzone(object):
                 logger.debug("Cancelled!")
                 return False
 
-            config = DropzoneB2AccountInfo(**results)
+            try:
+                config = DropzoneB2AccountInfo(**results)
+            except Exception as ex:
+                dz.alert("Invalid Configuration", " ".join(ex.args))
+                continue
+
             if config.is_valid:
                 config.save_config()
                 self.config = config
@@ -252,7 +258,7 @@ class B2Dropzone(object):
             folders.append((DropzoneFolder(files), self.b2_dest_path))
         logger.debug(folders)
         for folder, dest_path in folders:
-            logger.debug(folder, dest_path)
+            logger.debug("%s, %s", folder, dest_path)
             dest_folder = parse_sync_folder(dest_path, self.api)
             with DropzoneSyncReport(sys.stdout, False) as reporter:
                 millis = int(round(time.time() * 1000))

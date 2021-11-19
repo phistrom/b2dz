@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import zlib
+from datetime import datetime
 from functools import wraps
 
 try:
@@ -23,6 +24,11 @@ from b2sdk.v2 import UrlPoolAccountInfo
 
 
 logger = logging.getLogger(__name__)
+
+
+ACTION_START = datetime.now()
+"""Used for prefix percent placeholder formatting"""
+logger.debug("Action Start: %s", ACTION_START)
 
 
 def _missing_error(function):
@@ -125,7 +131,6 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
     def _load_value(key):
         value = os.environ.get(key)
         logger.debug("_load_value: Key '%s' was:\n%s", key, value)
-        print("_load_value: Key '%s' was:\n%s" % (key, value))
         # try:
         #     value = value.replace("\\:", ":").replace('\\"', '"')
         # except AttributeError:
@@ -323,11 +328,20 @@ class DropzoneB2AccountInfo(UrlPoolAccountInfo):
 
     @prefix.setter
     def prefix(self, value):
+        try:
+            value = value.strip("/")
+        except AttributeError:
+            pass
         if not value:
             value = "/"
         else:
-            value = "/" + value.strip("/") + "/"
+            value = "/" + value + "/"
         self._prefix = value
+
+    @property
+    def effective_prefix(self):
+        prefix = ACTION_START.strftime(self.prefix)
+        return prefix
 
     @property
     def realm(self):
